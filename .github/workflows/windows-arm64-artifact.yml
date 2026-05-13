@@ -1,0 +1,106 @@
+name: Windows ARM64 Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: "Optional artifact version, for example 0.0.23. Defaults to package version."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows ARM64 installer
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Cache Bun and Turbo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~\.bun\install\cache
+            .turbo
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}-${{ hashFiles('turbo.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install ARM64 MSVC components
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          if ([string]::IsNullOrWhiteSpace($installPath)) {
+            Write-Error "Visual Studio installation not found."
+            exit 1
+          }
+
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $components = @(
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64.Spectre",
+            "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+            "Microsoft.VisualStudio.Component.VC.Tools.ARM64.Spectre"
+          )
+
+          $argumentList = @("modify", "--installPath", "`"$installPath`"")
+          foreach ($component in $components) {
+            $argumentList += @("--add", $component)
+          }
+          $argumentList += @("--quiet", "--norestart")
+
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList $argumentList `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Build unsigned Windows ARM64 installer
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.build_version }}
+        run: |
+          $buildArgs = @(
+            "--platform", "win",
+            "--target", "nsis",
+            "--arch", "arm64",
+            "--verbose"
+          )
+          if (-not [string]::IsNullOrWhiteSpace($env:BUILD_VERSION)) {
+            $buildArgs += @("--build-version", $env:BUILD_VERSION)
+          }
+
+          & bun run dist:desktop:artifact -- @buildArgs
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: t3-code-windows-arm64
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/*.yml
+          if-no-files-found: error

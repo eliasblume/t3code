@@ -78,7 +78,7 @@
     "@effect/sql-sqlite-bun": "catalog:",
     "@effect/vitest": "catalog:",
     "effect": "catalog:",
-    "vite": "^8.0.0"
+    "vite": "^8.0.7"
   },
   "engines": {
     "bun": "^1.3.11",
